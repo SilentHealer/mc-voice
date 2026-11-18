@@ -3,7 +3,7 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 
-const server = http.createServer((req, res) => res.end('MC voice relay v4 (rooms + names)'));
+const server = http.createServer((req, res) => res.end('MC voice relay v5 (rooms + names + profiles)'));
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 const rooms = new Map(); // code -> { members: Map(id -> ws), timer }
 const CODE = /^[a-z0-9_-]{3,20}$/;
@@ -15,6 +15,12 @@ function broadcastCount(r) {
   for (const c of r.members.values()) {
     if (c.readyState === 1) { c.send('N:' + r.members.size); c.send(msg); }
   }
+}
+
+const MAX_AVATAR = 14000; // base64 characters (a 96x96 JPEG is ~5-9 KB)
+const stateOf = (c) => (c.muted ? '1' : '0') + (c.deaf ? '1' : '0');
+function toAll(r, msg) {
+  for (const c of r.members.values()) if (c.readyState === 1) c.send(msg);
 }
 
 wss.on('connection', (ws, req) => {
@@ -49,17 +55,42 @@ wss.on('connection', (ws, req) => {
   if (id < 0) return fail('ERR:FULL');
 
   ws.deaf = false;
+  ws.muted = false;
+  ws.avatar = '';
   ws.isAlive = true;
   ws.on('pong', () => (ws.isAlive = true));
   r.members.set(id, ws);
   ws.send('OK:' + id);
   broadcastCount(r);
+  // catch the newcomer up on everyone's mute/deafen state and profile picture...
+  for (const [i, c] of r.members) {
+    if (c === ws) continue;
+    ws.send('S:' + i + ':' + stateOf(c));
+    if (c.avatar) ws.send('A:' + i + ':' + c.avatar);
+  }
+  // ...and clear whatever an earlier member with the same id left behind on other phones
+  for (const c of r.members.values()) {
+    if (c !== ws && c.readyState === 1) { c.send('A:' + id + ':'); c.send('S:' + id + ':00'); }
+  }
 
   ws.on('message', (data, isBinary) => {
     if (!isBinary) { // control messages
       const t = data.toString();
-      if (t === 'deaf:1') ws.deaf = true;
-      else if (t === 'deaf:0') ws.deaf = false;
+      if (t === 'deaf:1' || t === 'deaf:0') {
+        ws.deaf = t === 'deaf:1';
+        toAll(r, 'S:' + id + ':' + stateOf(ws));
+      } else if (t === 'mute:1' || t === 'mute:0') {
+        ws.muted = t === 'mute:1';
+        toAll(r, 'S:' + id + ':' + stateOf(ws));
+      } else if (t.startsWith('P:')) { // profile picture (base64 JPEG, empty = remove)
+        const b = t.slice(2);
+        if (b.length <= MAX_AVATAR && /^[A-Za-z0-9+/=]*$/.test(b)) {
+          ws.avatar = b;
+          for (const c of r.members.values()) {
+            if (c !== ws && c.readyState === 1) c.send('A:' + id + ':' + b);
+          }
+        }
+      }
       return;
     }
     const out = Buffer.allocUnsafe(data.length + 1);
