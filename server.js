@@ -3,7 +3,7 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 
-const server = http.createServer((req, res) => res.end('MC voice relay OK'));
+const server = http.createServer((req, res) => res.end('MC voice relay v4 (rooms + names)'));
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 const rooms = new Map(); // code -> { members: Map(id -> ws), timer }
 const CODE = /^[a-z0-9_-]{3,20}$/;
