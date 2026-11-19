@@ -3,7 +3,7 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 
-const server = http.createServer((req, res) => res.end('MC voice relay v5 (rooms + names + profiles)'));
+const server = http.createServer((req, res) => res.end('MC voice relay v6 (rooms + names + profiles + echo test)'));
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 const rooms = new Map(); // code -> { members: Map(id -> ws), timer }
 const CODE = /^[a-z0-9_-]{3,20}$/;
@@ -55,6 +55,7 @@ wss.on('connection', (ws, req) => {
   if (id < 0) return fail('ERR:FULL');
 
   ws.deaf = false;
+  ws.echo = false;
   ws.muted = false;
   ws.avatar = '';
   ws.isAlive = true;
@@ -79,6 +80,8 @@ wss.on('connection', (ws, req) => {
       if (t === 'deaf:1' || t === 'deaf:0') {
         ws.deaf = t === 'deaf:1';
         toAll(r, 'S:' + id + ':' + stateOf(ws));
+      } else if (t === 'echo:1' || t === 'echo:0') { // "hear myself" test
+        ws.echo = t === 'echo:1';
       } else if (t === 'mute:1' || t === 'mute:0') {
         ws.muted = t === 'mute:1';
         toAll(r, 'S:' + id + ':' + stateOf(ws));
@@ -99,6 +102,7 @@ wss.on('connection', (ws, req) => {
     for (const c of r.members.values()) {
       if (c !== ws && !c.deaf && c.readyState === 1) c.send(out, { binary: true });
     }
+    if (ws.echo && ws.readyState === 1) ws.send(out, { binary: true });
   });
 
   ws.on('close', () => {
