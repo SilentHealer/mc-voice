@@ -4,8 +4,30 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 
-const server = http.createServer((req, res) => res.end('MC voice relay v8 (rooms + names + profiles + world distance volume)'));
-const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
+const VERSION = 8;
+const gameLog = []; // what happened when Minecraft tried to link a world (see /status)
+function logGame(msg) {
+  gameLog.push(new Date().toISOString().slice(11, 19) + ' UTC  ' + msg);
+  if (gameLog.length > 40) gameLog.shift();
+  console.log(msg);
+}
+const server = http.createServer((req, res) => {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  if (req.url.startsWith('/status')) { // open this page in a browser to see what is going on
+    const rs = [...rooms.entries()].map(([k, v]) =>
+      k + ' (' + v.members.size + ' people' + (v.game ? ', world linked' : '') + ')');
+    return res.end(['MC voice relay v' + VERSION,
+      'rooms: ' + (rs.length ? rs.join(', ') : 'none'), '',
+      'Minecraft world link log (newest last):'].concat(gameLog.length ? gameLog : ['(nothing yet)']).join('\n'));
+  }
+  res.end('MC voice relay v' + VERSION + ' (rooms + names + profiles + world distance volume)');
+});
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 16 * 1024,
+  // if the client asks for a sub-protocol, accept the first one instead of failing the handshake
+  handleProtocols: (protocols) => [...protocols][0] || false,
+});
 const rooms = new Map(); // code -> { members: Map(id -> ws), timer }
 const CODE = /^[a-z0-9_-]{3,20}$/;
 const EMPTY_ROOM_GRACE_MS = 2 * 60 * 1000; // survive short reconnects
@@ -84,7 +106,7 @@ function handleGame(ws, room) {
   ws.on('error', () => {});
   const r = rooms.get(room);
   if (!r) {
-    console.log('world link refused: there is no room "' + room + '"');
+    logGame('REFUSED: there is no room "' + room + '"');
     gameSay(ws, '\u00a7c[Voice] Room "' + room + '" does not exist (yet). Create or join it in the voice app, keep the app open, then run the command again.');
     setTimeout(() => { try { ws.close(); } catch (e) { } }, 2000);
     return;
@@ -92,7 +114,7 @@ function handleGame(ws, room) {
   if (r.game && r.game.readyState === 1) r.game.close();
   r.game = ws;
   toAll(r, 'W:1');
-  console.log('world linked to room "' + room + '"');
+  logGame('LINKED to room "' + room + '"');
   gameSay(ws, '\u00a7a[Voice] World linked to room ' + room.toUpperCase() + '. Distance volume is ' + (r.prox ? 'on' : 'off') + '.');
   const keepAlive = setInterval(() => { try { if (ws.readyState === 1) ws.ping(); } catch (e) { } }, 20000);
   const send = (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
@@ -128,10 +150,11 @@ function handleGame(ws, room) {
     } catch (e) { /* ignore anything we don't understand */ }
   });
 
-  ws.on('close', () => {
+  const linkedAt = Date.now();
+  ws.on('close', (code) => {
     clearInterval(timer);
     clearInterval(keepAlive);
-    console.log('world link closed for room "' + room + '"');
+    logGame('CLOSED room "' + room + '" after ' + Math.round((Date.now() - linkedAt) / 1000) + ' s (code ' + code + ')');
     if (r.game === ws) {
       r.game = null;
       r.pos.clear();
@@ -148,6 +171,8 @@ wss.on('connection', (ws, req) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname.startsWith('/mc/')) { // the Minecraft game linking a world
     ws.isGame = true;
+    logGame('Minecraft connected: ' + req.url + ' | ' + (req.headers['user-agent'] || 'no user-agent')
+      + ' | protocols: ' + (req.headers['sec-websocket-protocol'] || 'none'));
     handleGame(ws, decodeURIComponent(u.pathname.slice(4)).toLowerCase());
     return;
   }
@@ -192,6 +217,7 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => (ws.isAlive = true));
   r.members.set(id, ws);
   ws.send('OK:' + id);
+  ws.send('V:' + VERSION);
   broadcastCount(r);
   // catch the newcomer up on everyone's mute/deafen state and profile picture...
   for (const [i, c] of r.members) {
@@ -250,6 +276,22 @@ wss.on('connection', (ws, req) => {
     if (r.members.size === 0 && rooms.get(room) === r) {
       r.timer = setTimeout(() => {
         if (r.members.size === 0 && rooms.get(room) === r) rooms.delete(room);
+      }, EMPTY_ROOM_GRACE_MS);
+    }
+  });
+});
+
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isGame) continue; // the game link has its own lifetime
+    if (!ws.isAlive) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 15000);
+
+server.listen(process.env.PORT || 8080, () => console.log('Voice relay running'));
+r.members.size === 0 && rooms.get(room) === r) rooms.delete(room);
       }, EMPTY_ROOM_GRACE_MS);
     }
   });
