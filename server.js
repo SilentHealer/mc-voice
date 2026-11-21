@@ -291,6 +291,53 @@ setInterval(() => {
 }, 15000);
 
 server.listen(process.env.PORT || 8080, () => console.log('Voice relay running'));
+28) { r.range = n; toAll(r, 'X:' + (r.prox ? 1 : 0) + ':' + r.range); }
+      } else if (t === 'echo:1' || t === 'echo:0') { // "hear myself" test
+        ws.echo = t === 'echo:1';
+      } else if (t === 'mute:1' || t === 'mute:0') {
+        ws.muted = t === 'mute:1';
+        toAll(r, 'S:' + id + ':' + stateOf(ws));
+      } else if (t.startsWith('P:')) { // profile picture (base64 JPEG, empty = remove)
+        const b = t.slice(2);
+        if (b.length <= MAX_AVATAR && /^[A-Za-z0-9+/=]*$/.test(b)) {
+          ws.avatar = b;
+          for (const c of r.members.values()) {
+            if (c !== ws && c.readyState === 1) c.send('A:' + id + ':' + b);
+          }
+        }
+      }
+      return;
+    }
+    const out = Buffer.allocUnsafe(data.length + 1);
+    out[0] = id;
+    data.copy(out, 1);
+    for (const c of r.members.values()) {
+      if (c !== ws && !c.deaf && c.readyState === 1) c.send(out, { binary: true });
+    }
+    if (ws.echo && ws.readyState === 1) ws.send(out, { binary: true });
+  });
+
+  ws.on('close', () => {
+    if (r.members.get(id) === ws) { r.members.delete(id); r.pos.delete(id); r.lastG.delete(id); }
+    broadcastCount(r);
+    if (r.members.size === 0 && rooms.get(room) === r) {
+      r.timer = setTimeout(() => {
+        if (r.members.size === 0 && rooms.get(room) === r) rooms.delete(room);
+      }, EMPTY_ROOM_GRACE_MS);
+    }
+  });
+});
+
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isGame) continue; // the game link has its own lifetime
+    if (!ws.isAlive) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 15000);
+
+server.listen(process.env.PORT || 8080, () => console.log('Voice relay running'));
 r.members.size === 0 && rooms.get(room) === r) rooms.delete(room);
       }, EMPTY_ROOM_GRACE_MS);
     }
